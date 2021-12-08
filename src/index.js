@@ -4,6 +4,7 @@ const Day = require('dayjs');
 const Axios = require('axios');
 const Shell = require('shelljs');
 const HttpsProxyAgent = require('https-proxy-agent');
+const fs = require('fs');
 
 dotenv.config();
 
@@ -57,20 +58,36 @@ class No2tg {
     const res = await this.notion.databases.query({
       database_id: this.databaseId,
       filter: {
-        property: 'PlanningPublish',
-        date: { equals: Day().format('YYYY-MM-DD') },
+        and: [
+          {
+            property: 'PlanningPublish',
+            date: { equals: Day().format('YYYY-MM-DD') },
+          },
+          {
+            property: 'Status',
+            select: { equals: 'Completed' },
+          },
+        ],
       },
     });
 
     console.log('sendTodayUpdates: Query successful');
 
-    res.results.forEach((result) => this.sendToTelegram(result));
+    // 每次发布第一个
+    if (res.results.length) {
+      const publishing = res.results[0];
+      this.sendToTelegram(publishing);
+    } else {
+      console.log('Nothing to publish today');
+    }
   }
 
   async sendToTelegram(pageCtx) {
     const _category = pageCtx.properties.Category.select.name;
     const categoryBuilderMap = {
       镇站之宝: this.buildBilibiliVideoCtx,
+      油管精选: this.buildYoutubeVideoCtx,
+      浴室深思: this.buildThoughtCtx,
     };
 
     if (!categoryBuilderMap[_category]) {
@@ -87,12 +104,13 @@ class No2tg {
     const pageBlocks = await this.notion.blocks.children.list({ block_id: pageCtx.id });
     const _contentText = categoryBuilderMap[_category].call(this, pageCtx, pageBlocks.results);
 
-    const finalText = `${_tags}\n\n${_contentText}\n\n频道：@AboutZY`
-      .trim()
-      .replaceAll(`+`, `\\+`)
-      .replaceAll(`-`, `\\-`);
+    const finalText = `${_tags}\n\n${_contentText}\n\n频道：@AboutZY`;
+    // .trim()
+    // .replaceAll(`+`, `\\+`)
+    // .replaceAll(`-`, `\\-`);
 
     console.log(finalText);
+    fs.writeFileSync('./dist/finalText.txt', finalText);
 
     await this.http({
       url: '/sendPhoto',
@@ -106,6 +124,21 @@ class No2tg {
     });
 
     console.log('Sent!');
+
+    this.changePageStatus(pageCtx);
+  }
+
+  async changePageStatus(pageCtx) {
+    await this.notion.pages.update({
+      page_id: pageCtx.id,
+      properties: {
+        Status: {
+          select: { name: 'Published' },
+        },
+      },
+    });
+
+    console.log('Page status changed to Published');
   }
 
   /**
@@ -114,14 +147,22 @@ class No2tg {
   buildBilibiliVideoCtx(pageCtx, pageBlocks) {
     const _meta = [];
     _meta.push(pageCtx.properties.Original.checkbox ? '👩‍💻 原创：' + '✅' : '❌');
-    if (pageCtx.properties.Original.checkbox)
+    if (pageCtx.properties.Original.checkbox) {
+      const up = pageCtx.properties.UPLink.url
+        ? this._buildLink(
+            pageCtx.properties.UP.rich_text[0].plain_text,
+            pageCtx.properties.UPLink.url
+          )
+        : pageCtx.properties.UP.rich_text[0].plain_text;
+      _meta.push(`🆙 UP：${up}`);
+    }
+    if (pageCtx.properties.VideoPubDate.date) {
       _meta.push(
-        `🆙 UP：${this._buildLink(
-          pageCtx.properties.UP.rich_text[0].plain_text,
-          pageCtx.properties.UPLink.url
+        `⏰ 发布时间：${this._getPlainText(
+          this._formatDate(pageCtx.properties.VideoPubDate.date.start)
         )}`
       );
-    _meta.push(`📆 发布时间：${this._formatDate(pageCtx.properties.VideoPubDate.date.start)}`);
+    }
     const meta = _meta.join('\n');
 
     return `${this._buildTitle(pageCtx)}
@@ -129,6 +170,44 @@ class No2tg {
 ${meta}
 
 ${this._translateBlocks(pageBlocks)}`;
+  }
+
+  /**
+   * 油管精选
+   */
+  buildYoutubeVideoCtx(pageCtx, pageBlocks) {
+    const _meta = [];
+    _meta.push(pageCtx.properties.Original.checkbox ? '👩‍💻 原创：' + '✅' : '❌');
+    if (pageCtx.properties.Original.checkbox) {
+      const up = pageCtx.properties.UPLink.url
+        ? this._buildLink(
+            pageCtx.properties.UP.rich_text[0].plain_text,
+            pageCtx.properties.UPLink.url
+          )
+        : pageCtx.properties.UP.rich_text[0].plain_text;
+      _meta.push(`🆙 UP：${up}`);
+    }
+    if (pageCtx.properties.VideoPubDate.date) {
+      _meta.push(
+        `⏰ 发布时间：${this._getPlainText(
+          this._formatDate(pageCtx.properties.VideoPubDate.date.start)
+        )}`
+      );
+    }
+    const meta = _meta.join('\n');
+
+    return `${this._buildTitle(pageCtx)}
+
+${meta}
+
+${this._translateBlocks(pageBlocks)}`;
+  }
+
+  /**
+   * 浴室沉思
+   */
+  buildThoughtCtx(pageCtx, pageBlocks) {
+    return this._translateBlocks(pageBlocks);
   }
 
   /**
@@ -142,9 +221,9 @@ ${this._translateBlocks(pageBlocks)}`;
    * 构建标题
    */
   _buildTitle(pageCtx) {
-    const plainTextTitle = pageCtx.properties.Name.title[0].plain_text;
-    const title = pageCtx.properties.BiliVideoLink.url
-      ? this._buildLink(plainTextTitle, pageCtx.properties.BiliVideoLink.url)
+    const plainTextTitle = this._getPlainText(pageCtx.properties.Name.title[0].plain_text);
+    const title = pageCtx.properties.VideoLink.url
+      ? this._buildLink(plainTextTitle, pageCtx.properties.VideoLink.url)
       : plainTextTitle;
     const emoji = pageCtx.icon?.emoji;
 
@@ -190,11 +269,13 @@ ${this._translateBlocks(pageBlocks)}`;
 
             // 如果文本是代码
             if (part.annotations.code) {
-              thisPart = '`' + part.plain_text + '`';
+              thisPart = '`' + this._getPlainText(part.plain_text) + '`';
             }
             // 链接，加粗，斜体，删除线，下划线可共存
             else {
-              thisPart = part.href ? `[${part.plain_text}](${part.href})` : part.plain_text;
+              thisPart = part.href
+                ? `[${this._getPlainText(part.plain_text)}](${part.href})`
+                : this._getPlainText(part.plain_text);
               if (part.annotations.bold) {
                 thisPart = `*${thisPart}*`;
               }
@@ -213,7 +294,7 @@ ${this._translateBlocks(pageBlocks)}`;
           })
           .join('');
       })
-      .join('\n')
+      .join('\n\n')
       .trim();
   }
 
@@ -226,6 +307,19 @@ ${this._translateBlocks(pageBlocks)}`;
         resolve(data.trim());
       });
     });
+  }
+
+  _getPlainText(str) {
+    return str
+      .trim()
+      .replaceAll(`+`, `\\+`)
+      .replaceAll(`_`, `\\_`)
+      .replaceAll(`?`, `\\?`)
+      .replaceAll(`(`, `\\(`)
+      .replaceAll(`)`, `\\)`)
+      .replaceAll(`[`, `\\[`)
+      .replaceAll(`]`, `\\]`)
+      .replaceAll(`-`, `\\-`);
   }
 }
 
