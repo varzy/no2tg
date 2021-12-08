@@ -87,7 +87,7 @@ class No2tg {
     const categoryBuilderMap = {
       镇站之宝: this.buildBilibiliVideoCtx,
       油管精选: this.buildYoutubeVideoCtx,
-      浴室深思: this.buildThoughtCtx,
+      浴室沉思: this.buildThoughtCtx,
       码农诱捕器: this.buildProgrammerCtx,
     };
 
@@ -343,6 +343,7 @@ ${this._translateBlocks(pageBlocks)}`;
       .replaceAll(`)`, `\\)`)
       .replaceAll(`[`, `\\[`)
       .replaceAll(`]`, `\\]`)
+      .replaceAll(`.`, `\\.`)
       .replaceAll(`-`, `\\-`);
   }
 }
