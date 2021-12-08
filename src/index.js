@@ -88,6 +88,7 @@ class No2tg {
       镇站之宝: this.buildBilibiliVideoCtx,
       油管精选: this.buildYoutubeVideoCtx,
       浴室深思: this.buildThoughtCtx,
+      码农诱捕器: this.buildProgrammerCtx,
     };
 
     if (!categoryBuilderMap[_category]) {
@@ -165,7 +166,7 @@ class No2tg {
     }
     const meta = _meta.join('\n');
 
-    return `${this._buildTitle(pageCtx)}
+    return `${this._buildVideoTitle(pageCtx)}
 
 ${meta}
 
@@ -196,7 +197,7 @@ ${this._translateBlocks(pageBlocks)}`;
     }
     const meta = _meta.join('\n');
 
-    return `${this._buildTitle(pageCtx)}
+    return `${this._buildVideoTitle(pageCtx)}
 
 ${meta}
 
@@ -211,6 +212,15 @@ ${this._translateBlocks(pageBlocks)}`;
   }
 
   /**
+   * 码农诱捕器
+   */
+  buildProgrammerCtx(pageCtx, pageBlocks) {
+    return `${this._buildProjectTitle(pageCtx)}
+
+${this._translateBlocks(pageBlocks)}`;
+  }
+
+  /**
    * 构建链接
    */
   _buildLink(label, link) {
@@ -218,12 +228,26 @@ ${this._translateBlocks(pageBlocks)}`;
   }
 
   /**
-   * 构建标题
+   * 构建视频标题
    */
-  _buildTitle(pageCtx) {
-    const plainTextTitle = this._getPlainText(pageCtx.properties.Name.title[0].plain_text);
+  _buildVideoTitle(pageCtx) {
+    const plainTextTitle = `*${this._getPlainText(pageCtx.properties.Name.title[0].plain_text)}*`;
     const title = pageCtx.properties.VideoLink.url
       ? this._buildLink(plainTextTitle, pageCtx.properties.VideoLink.url)
+      : plainTextTitle;
+    const emoji = pageCtx.icon?.emoji;
+
+    return emoji ? emoji + ' ' + title : title;
+  }
+
+  /**
+   * 构建项目
+   * @TODO: 优化
+   */
+   _buildProjectTitle(pageCtx) {
+    const plainTextTitle = `*${this._getPlainText(pageCtx.properties.Name.title[0].plain_text)}*`;
+    const title = pageCtx.properties.ProjectLink.url
+      ? this._buildLink(plainTextTitle, pageCtx.properties.ProjectLink.url)
       : plainTextTitle;
     const emoji = pageCtx.icon?.emoji;
 
