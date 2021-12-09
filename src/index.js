@@ -4,59 +4,28 @@ const Day = require('dayjs');
 const Axios = require('axios');
 const Shell = require('shelljs');
 const HttpsProxyAgent = require('https-proxy-agent');
-const fs = require('fs');
 
 dotenv.config();
 
 class No2tg {
-  constructor() {}
-
+  /**
+   * 初始化
+   */
   async init() {
-    await this.initNotion();
-    await this.initHttp();
+    await this._initNotion();
+    await this._initHttp();
   }
 
-  async initNotion() {
-    const hostIP = await this._getHostIP();
-
-    this.notion = new Client({
-      auth: process.env.NOTION_KEY,
-      agent: new HttpsProxyAgent(`http://${hostIP}:7890`),
-    });
-    this.databaseId = process.env.NOTION_DATABASE_ID;
-  }
-
-  async initHttp() {
-    const hostIP = await this._getHostIP();
-
-    this.http = Axios.create({
-      baseURL: `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`,
-      headers: { 'Content-Type': 'application/json' },
-      proxy: {
-        protocol: 'http',
-        host: hostIP,
-        port: 7890,
-      },
-    });
-
-    this.http.interceptors.request.use((config) => {
-      // console.log('HTTP CONFIG DATA:', config.data);
-      return config;
-    });
-
-    this.http.interceptors.response.use(
-      (res) => res,
-      (err) => {
-        console.log('HTTP ERROR');
-        console.log(err);
-        return Promise.reject(err.response);
-      }
-    );
-  }
-
+  /**
+   * 发送消息
+   */
   async sendTodayUpdates() {
-    const res = await this.notion.databases.query({
+    // ============================================
+    // 获取待发布内容
+    // ============================================
+    const resOfNotion = await this.notion.databases.query({
       database_id: this.databaseId,
+      page_size: 1,
       filter: {
         and: [
           {
@@ -71,271 +40,162 @@ class No2tg {
       },
     });
 
-    console.log('sendTodayUpdates: Query successful');
-
-    // 每次发布第一个
-    if (res.results.length) {
-      const publishing = res.results[0];
-      this.sendToTelegram(publishing);
-    } else {
+    // 每次仅发布第一个
+    if (!resOfNotion.results.length) {
       console.log('Nothing to publish today');
-    }
-  }
-
-  async sendToTelegram(pageCtx) {
-    const _category = pageCtx.properties.Category.select.name;
-    const categoryBuilderMap = {
-      镇站之宝: this.buildBilibiliVideoCtx,
-      油管精选: this.buildYoutubeVideoCtx,
-      浴室沉思: this.buildThoughtCtx,
-      码农诱捕器: this.buildProgrammerCtx,
-      每日一歌: this.buildSongCtx,
-    };
-
-    if (!categoryBuilderMap[_category]) {
-      console.error('No category builder found for category:', _category);
       return;
     }
 
-    const _covers = this._buildCovers(pageCtx);
-    console.log(_covers);
+    const publishing = resOfNotion.results[0];
+    console.log('sendTodayUpdates: Publishing', publishing);
 
-    const _tags = this._buildTags(pageCtx);
-    console.log(_tags);
+    // ============================================
+    // 获取封面
+    // ============================================
+    const COVERS = this._buildCovers(publishing);
 
-    const pageBlocks = await this.notion.blocks.children.list({ block_id: pageCtx.id });
-    const _contentText = categoryBuilderMap[_category].call(this, pageCtx, pageBlocks.results);
+    // ============================================
+    // 获取最终的正文
+    // ============================================
+    let template = '';
+    const templatePartials = {};
 
-    const finalText = `${_tags}\n\n${_contentText}\n\n频道：@AboutZY`;
-    // .trim()
-    // .replaceAll(`+`, `\\+`)
-    // .replaceAll(`-`, `\\-`);
+    // 标签
+    template += `[[_TAGS]]\n\n`;
+    templatePartials._TAGS = this._buildTags(publishing);
 
-    console.log(finalText);
-    fs.writeFileSync('./dist/finalText.txt', finalText);
+    // 标题
+    if (!publishing.properties.IsHideTitle.checkbox) {
+      template += `[[_TITLE]]\n\n`;
+      templatePartials._TITLE = this._buildTitle(publishing);
+    }
 
-    await this.http({
-      url: '/sendPhoto',
-      method: 'POST',
-      data: {
-        chat_id: process.env.TELEGRAM_CHAT_ID,
+    // 视频元信息
+    if (publishing.properties.WithVideoMeta.checkbox) {
+      template += `[[_VIDEO_META]]\n\n`;
+      templatePartials._VIDEO_META = this._buildVideoMeta(publishing);
+    }
+
+    // 内容
+    template += `[[_CONTENT]]\n\n`;
+    const pageBlocks = await this.notion.blocks.children.list({ block_id: publishing.id });
+    templatePartials._CONTENT = this._buildContent(pageBlocks.results);
+
+    // 频道名
+    if (!publishing.properties.IsHideCopyright.checkbox) {
+      template += `频道：@AboutZY`;
+    }
+
+    const FINAL_TEXT = this._templateToText(template, templatePartials);
+    console.log('FINAL_TEXT', FINAL_TEXT);
+
+    // ============================================
+    // 发送给 Telegram
+    // ============================================
+    let api;
+    let reqData = { chat_id: process.env.TELEGRAM_CHAT_ID };
+
+    // 无封面
+    if (!COVERS.length) {
+      api = '/sendMessage';
+      reqData = { ...reqData, text: FINAL_TEXT, parse_mode: 'MarkdownV2' };
+    }
+    // 只有一张封面图
+    else if (COVERS.length === 1) {
+      api = '/sendPhoto';
+      reqData = { ...reqData, caption: FINAL_TEXT, photo: COVERS[0], parse_mode: 'MarkdownV2' };
+    }
+    // 多张封面图
+    else {
+      api = '/sendMediaGroup';
+      const medias = COVERS.map((cover) => ({
+        type: 'photo',
+        media: cover,
         parse_mode: 'MarkdownV2',
-        photo: _covers[0],
-        caption: finalText,
-      },
+      }));
+      medias[0].caption = FINAL_TEXT;
+      reqData = { ...reqData, media: medias };
+    }
+
+    const resOfTelegram = await this.http({
+      url: api,
+      method: 'POST',
+      data: reqData,
     });
 
-    console.log('Sent!');
+    console.log(`Sent!`, resOfTelegram.data);
 
-    if(process.env.NO2TG_AUTO_CHANGE_STATUS === 'true') {
-      this.changePageStatus(pageCtx);
-    }
-  }
-
-  async changePageStatus(pageCtx) {
-    await this.notion.pages.update({
-      page_id: pageCtx.id,
-      properties: {
-        Status: {
-          select: { name: 'Published' },
+    // ============================================
+    // 更新 Notion 中的 Post 状态
+    // ============================================
+    if (process.env.NO2TG_AUTO_CHANGE_STATUS === 'true') {
+      await this.notion.pages.update({
+        page_id: publishing.id,
+        properties: {
+          Status: {
+            select: { name: 'Published' },
+          },
         },
+      });
+
+      console.log('Page status changed to Published');
+    }
+
+    console.log(`All Done!`, publishing);
+  }
+
+  /**
+   * 初始化 Notion Client
+   */
+  async _initNotion() {
+    const hostIP = await this._getHostIP();
+
+    this.notion = new Client({
+      auth: process.env.NOTION_KEY,
+      agent: new HttpsProxyAgent(`http://${hostIP}:7890`),
+    });
+    this.databaseId = process.env.NOTION_DATABASE_ID;
+  }
+
+  /**
+   * 初始化 Axios
+   */
+  async _initHttp() {
+    const hostIP = await this._getHostIP();
+
+    this.http = Axios.create({
+      baseURL: `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`,
+      headers: { 'Content-Type': 'application/json' },
+      proxy: {
+        protocol: 'http',
+        host: hostIP,
+        port: 7890,
       },
     });
 
-    console.log('Page status changed to Published');
+    this.http.interceptors.response.use(
+      (res) => res,
+      (err) => {
+        console.error('HTTP ERROR', err);
+        return Promise.reject(err.response);
+      }
+    );
   }
 
   /**
-   * category: 镇站之宝
+   * 将模板中的标签替换为真实内容
    */
-  buildBilibiliVideoCtx(pageCtx, pageBlocks) {
-    const _meta = [];
-    _meta.push(pageCtx.properties.Original.checkbox ? '👩‍💻 原创：' + '✅' : '❌');
-    if (pageCtx.properties.Original.checkbox) {
-      const up = pageCtx.properties.UPLink.url
-        ? this._buildLink(
-            pageCtx.properties.UP.rich_text[0].plain_text,
-            pageCtx.properties.UPLink.url
-          )
-        : pageCtx.properties.UP.rich_text[0].plain_text;
-      _meta.push(`🆙 UP：${up}`);
-    }
-    if (pageCtx.properties.VideoPubDate.date) {
-      _meta.push(
-        `⏰ 发布时间：${this._getPlainText(
-          this._formatDate(pageCtx.properties.VideoPubDate.date.start)
-        )}`
-      );
-    }
-    const meta = _meta.join('\n');
+  _templateToText(template, partials) {
+    Object.keys(partials).forEach((key) => {
+      template = template.replace(`[[${key}]]`, partials[key]);
+    });
 
-    return `${this._buildVideoTitle(pageCtx)}
-
-${meta}
-
-${this._translateBlocks(pageBlocks)}`;
+    return template;
   }
 
   /**
-   * 油管精选
+   * 获取本机 IP，用于代理
    */
-  buildYoutubeVideoCtx(pageCtx, pageBlocks) {
-    const _meta = [];
-    _meta.push(pageCtx.properties.Original.checkbox ? '👩‍💻 原创：' + '✅' : '❌');
-    if (pageCtx.properties.Original.checkbox) {
-      const up = pageCtx.properties.UPLink.url
-        ? this._buildLink(
-            pageCtx.properties.UP.rich_text[0].plain_text,
-            pageCtx.properties.UPLink.url
-          )
-        : pageCtx.properties.UP.rich_text[0].plain_text;
-      _meta.push(`🆙 UP：${up}`);
-    }
-    if (pageCtx.properties.VideoPubDate.date) {
-      _meta.push(
-        `⏰ 发布时间：${this._getPlainText(
-          this._formatDate(pageCtx.properties.VideoPubDate.date.start)
-        )}`
-      );
-    }
-    const meta = _meta.join('\n');
-
-    return `${this._buildVideoTitle(pageCtx)}
-
-${meta}
-
-${this._translateBlocks(pageBlocks)}`;
-  }
-
-  /**
-   * 浴室沉思
-   */
-  buildThoughtCtx(pageCtx, pageBlocks) {
-    return this._translateBlocks(pageBlocks);
-  }
-
-  /**
-   * 码农诱捕器
-   */
-  buildProgrammerCtx(pageCtx, pageBlocks) {
-    return `${this._buildProjectTitle(pageCtx)}
-
-${this._translateBlocks(pageBlocks)}`;
-  }
-
-  buildSongCtx(pageCtx, pageBlocks) {
-    return `${this._buildProjectTitle(pageCtx)}
-
-${this._translateBlocks(pageBlocks)}`;
-  }
-
-  /**
-   * 构建链接
-   */
-  _buildLink(label, link) {
-    return `[${label}](${link})`;
-  }
-
-  /**
-   * 构建视频标题
-   */
-  _buildVideoTitle(pageCtx) {
-    const plainTextTitle = `*${this._getPlainText(pageCtx.properties.Name.title[0].plain_text)}*`;
-    const title = pageCtx.properties.VideoLink.url
-      ? this._buildLink(plainTextTitle, pageCtx.properties.VideoLink.url)
-      : plainTextTitle;
-    const emoji = pageCtx.icon?.emoji;
-
-    return emoji ? emoji + ' ' + title : title;
-  }
-
-  /**
-   * 构建项目
-   * @TODO: 优化
-   */
-  _buildProjectTitle(pageCtx) {
-    const plainTextTitle = `*${this._getPlainText(pageCtx.properties.Name.title[0].plain_text)}*`;
-    const title = pageCtx.properties.ProjectLink.url
-      ? this._buildLink(plainTextTitle, pageCtx.properties.ProjectLink.url)
-      : plainTextTitle;
-    const emoji = pageCtx.icon?.emoji;
-
-    return emoji ? emoji + ' ' + title : title;
-  }
-
-  /**
-   * 构建标签
-   */
-  _buildTags(pageCtx) {
-    const category = pageCtx.properties.Category.select.name;
-    const tags = pageCtx.properties.Tags.multi_select.map((tag) => tag.name);
-
-    return [category, ...tags].map((tag) => `\\#${tag}`).join(' ');
-  }
-
-  /**
-   * 封面
-   */
-  _buildCovers(pageCtx) {
-    const covers = pageCtx.properties.Cover.files.map((cover) => cover.file.url);
-
-    return covers;
-  }
-
-  /**
-   * 格式化时间
-   */
-  _formatDate(date) {
-    return Day(date).format('YYYY-MM-DD');
-  }
-
-  /**
-   * 格式化文本内容
-   */
-  _translateBlocks(pageBlocks) {
-    return pageBlocks
-      .filter((block) => block.paragraph.text.length)
-      .map((block) => {
-        const withFormatText = block.paragraph.text
-          .map((part) => {
-            let thisPart = '';
-
-            // 如果文本是代码
-            if (part.annotations.code) {
-              thisPart = '`' + this._getPlainText(part.plain_text) + '`';
-            }
-            // 链接，加粗，斜体，删除线，下划线可共存
-            else {
-              thisPart = part.href
-                ? `[${this._getPlainText(part.plain_text)}](${part.href})`
-                : this._getPlainText(part.plain_text);
-              if (part.annotations.bold) {
-                thisPart = `*${thisPart}*`;
-              }
-              if (part.annotations.italic) {
-                thisPart = `_${thisPart}_`;
-              }
-              if (part.annotations.underline) {
-                thisPart = `__${thisPart}__`;
-              }
-              if (part.annotations.strikethrough) {
-                thisPart = `~${thisPart}~`;
-              }
-            }
-
-            return thisPart;
-          })
-          .join('');
-
-          // 支持以 空格|空格 的形式切分单行单行文本
-        return withFormatText.indexOf(' | ') > -1
-          ? withFormatText.split(' | ').join('\n')
-          : withFormatText;
-      })
-      .join('\n\n')
-      .trim();
-  }
-
   async _getHostIP() {
     return new Promise((resolve) => {
       const child = Shell.exec(`cat /etc/resolv.conf | grep nameserver | awk '{ print $2 }'`, {
@@ -347,17 +207,121 @@ ${this._translateBlocks(pageBlocks)}`;
     });
   }
 
-  _getPlainText(str) {
-    return str
-      .replaceAll(`+`, `\\+`)
-      .replaceAll(`_`, `\\_`)
-      .replaceAll(`?`, `\\?`)
-      .replaceAll(`(`, `\\(`)
-      .replaceAll(`)`, `\\)`)
-      .replaceAll(`[`, `\\[`)
-      .replaceAll(`]`, `\\]`)
-      .replaceAll(`.`, `\\.`)
-      .replaceAll(`-`, `\\-`);
+  /**
+   * 构建一个链接
+   */
+  _buildLink(text, url) {
+    return `[${text}](${url})`;
+  }
+
+  /**
+   * 构建封面
+   */
+  _buildCovers(pageCtx) {
+    return pageCtx.properties.Cover.files.map((cover) => cover.file.url);
+  }
+
+  /**
+   * 构建标签。分类总是第一个标签
+   */
+  _buildTags(pageCtx) {
+    const category = pageCtx.properties.Category.select.name;
+    const tags = pageCtx.properties.Tags.multi_select.map((tag) => tag.name);
+
+    return [category, ...tags].map((tag) => `\\#${tag}`).join(' ');
+  }
+
+  /**
+   * 构建标题。自动组装 TitleLink 和 Emoji
+   */
+  _buildTitle(pageCtx) {
+    const plainTextTitle = pageCtx.properties.Name.title[0].plain_text;
+    const escapedTitle = this._escapeText(plainTextTitle);
+    const boldedTitle = `*${escapedTitle}*`;
+    const linkedTitle = pageCtx.properties.TitleLink.url
+      ? this._buildLink(boldedTitle, pageCtx.properties.TitleLink.url)
+      : boldedTitle;
+    const emoji = pageCtx.icon.emoji;
+
+    return emoji ? emoji + ' ' + linkedTitle : linkedTitle;
+  }
+
+  /**
+   * 对文本进行转义，保证符号能够正确输出
+   * <https://core.telegram.org/bots/api#markdownv2-style>
+   */
+  _escapeText(str) {
+    return str.replace(/[_*[\]()>~#+\-=|{}.!\\]/g, '\\$&');
+  }
+
+  /**
+   * 构建内容
+   */
+  _buildContent(pageBlocks) {
+    return pageBlocks
+      .map((block) => this._translateNotionTextsToMarkdown(block.paragraph.text))
+      .join('\n')
+      .trim();
+  }
+
+  /**
+   * 把 Notion 格式的副文本区块转换为 Telegram 格式的副本文内容
+   */
+  _translateNotionTextsToMarkdown(texts) {
+    return texts
+      .map((part) => {
+        let partText = this._escapeText(part.plain_text);
+
+        // 如果文本是代码
+        if (part.annotations.code) {
+          partText = '`' + partText + '`';
+        }
+        // 链接，加粗，斜体，删除线，下划线可共存
+        else {
+          if (part.href) {
+            partText = this._buildLink(partText, part.href);
+          }
+          if (part.annotations.bold) {
+            partText = `*${partText}*`;
+          }
+          if (part.annotations.italic) {
+            partText = `_${partText}_`;
+          }
+          if (part.annotations.underline) {
+            partText = `__${partText}__`;
+          }
+          if (part.annotations.strikethrough) {
+            partText = `~${partText}~`;
+          }
+        }
+
+        return partText;
+      })
+      .join('');
+  }
+
+  /**
+   * 构建视频信息
+   */
+  _buildVideoMeta(pageCtx) {
+    const meta = [];
+
+    // 原创
+    meta.push(pageCtx.properties.vOriginal.checkbox ? '👩‍💻 原创：' + '✅' : '❌');
+    // UP 主信息
+    if (pageCtx.properties.vUp.rich_text.length) {
+      const upText = this._translateNotionTextsToMarkdown(pageCtx.properties.vUp.rich_text);
+      meta.push(`🆙 UP：${upText}`);
+    }
+    // 发布时间
+    if (pageCtx.properties.vPubDate.date) {
+      const videoPubTime = pageCtx.properties.vPubDate.date.start;
+      const formattedPubTime = Day(videoPubTime).format('YYYY-MM-DD');
+      const escapedPubTime = this._escapeText(formattedPubTime);
+      meta.push(`⏰ 发布时间：${escapedPubTime}`);
+    }
+
+    return meta.join('\n');
   }
 }
 
