@@ -6,12 +6,13 @@
   "license": "MIT",
   "scripts": {
     "prettier": "prettier --write '**/*.js'",
-    "work": "node ./src/index.js",
+    "send": "node ./src/index.js",
     "lint": "eslint --fix '**/*.js'"
   },
   "dependencies": {
     "@notionhq/client": "^0.4.9",
     "axios": "^0.24.0",
+    "commander": "^8.3.0",
     "dayjs": "^1.10.7",
     "dotenv": "^10.0.0",
     "https-proxy-agent": "^5.0.0",
