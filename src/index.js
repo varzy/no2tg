@@ -89,6 +89,7 @@ class No2tg {
       油管精选: this.buildYoutubeVideoCtx,
       浴室沉思: this.buildThoughtCtx,
       码农诱捕器: this.buildProgrammerCtx,
+      每日一歌: this.buildSongCtx,
     };
 
     if (!categoryBuilderMap[_category]) {
@@ -126,7 +127,9 @@ class No2tg {
 
     console.log('Sent!');
 
-    this.changePageStatus(pageCtx);
+    if(process.env.NO2TG_AUTO_CHANGE_STATUS === 'true') {
+      this.changePageStatus(pageCtx);
+    }
   }
 
   async changePageStatus(pageCtx) {
@@ -220,6 +223,12 @@ ${this._translateBlocks(pageBlocks)}`;
 ${this._translateBlocks(pageBlocks)}`;
   }
 
+  buildSongCtx(pageCtx, pageBlocks) {
+    return `${this._buildProjectTitle(pageCtx)}
+
+${this._translateBlocks(pageBlocks)}`;
+  }
+
   /**
    * 构建链接
    */
@@ -244,7 +253,7 @@ ${this._translateBlocks(pageBlocks)}`;
    * 构建项目
    * @TODO: 优化
    */
-   _buildProjectTitle(pageCtx) {
+  _buildProjectTitle(pageCtx) {
     const plainTextTitle = `*${this._getPlainText(pageCtx.properties.Name.title[0].plain_text)}*`;
     const title = pageCtx.properties.ProjectLink.url
       ? this._buildLink(plainTextTitle, pageCtx.properties.ProjectLink.url)
@@ -287,7 +296,7 @@ ${this._translateBlocks(pageBlocks)}`;
     return pageBlocks
       .filter((block) => block.paragraph.text.length)
       .map((block) => {
-        return block.paragraph.text
+        const withFormatText = block.paragraph.text
           .map((part) => {
             let thisPart = '';
 
@@ -317,6 +326,11 @@ ${this._translateBlocks(pageBlocks)}`;
             return thisPart;
           })
           .join('');
+
+          // 支持以 空格|空格 的形式切分单行单行文本
+        return withFormatText.indexOf(' | ') > -1
+          ? withFormatText.split(' | ').join('\n')
+          : withFormatText;
       })
       .join('\n\n')
       .trim();
@@ -335,7 +349,6 @@ ${this._translateBlocks(pageBlocks)}`;
 
   _getPlainText(str) {
     return str
-      .trim()
       .replaceAll(`+`, `\\+`)
       .replaceAll(`_`, `\\_`)
       .replaceAll(`?`, `\\?`)
