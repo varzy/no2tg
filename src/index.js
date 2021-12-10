@@ -53,27 +53,14 @@ async function initProxy() {
 
   // 如果在 WSL 环境
   if (process.env.NO2TH_PROXY_AT_WSL) {
-    const hostIP = await getHostIP();
+    const { stdout  } = Shell.exec(`cat /etc/resolv.conf | grep nameserver | awk '{ print $2 }'`);
+    const hostIP = stdout.trim();
     const port = process.env.NO2TH_PROXY_AT_WSL_PORT;
     proxyAddress = `http://${hostIP}:${port}`;
   }
 
   Shell.env.http_proxy = proxyAddress;
   Shell.env.https_proxy = proxyAddress;
-}
-
-/**
- * 获取宿主机 IP
- */
-async function getHostIP() {
-  return new Promise((resolve) => {
-    const child = Shell.exec(`cat /etc/resolv.conf | grep nameserver | awk '{ print $2 }'`, {
-      async: true,
-    });
-    child.stdout.on('data', (data) => {
-      resolve(data.trim());
-    });
-  });
 }
 
 run();
