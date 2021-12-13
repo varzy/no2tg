@@ -236,7 +236,7 @@ class No2tg {
    * 构建标题。自动组装 TitleLink 和 Emoji
    */
   _buildTitle(pageCtx) {
-    const plainTextTitle = pageCtx.properties.Name.title[0].plain_text;
+    const plainTextTitle = pageCtx.properties.Name.title.map((title) => title.plain_text).join('');
     const escapedTitle = this._escapeText(plainTextTitle);
     const boldedTitle = `*${escapedTitle}*`;
     const linkedTitle = pageCtx.properties.TitleLink.url
