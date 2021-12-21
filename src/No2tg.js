@@ -44,7 +44,7 @@ class No2tg {
   async sendByDay(day) {
     const resOfNotion = await this.notion.databases.query({
       database_id: this.databaseId,
-      page_size: 1,
+      page_size: 50,
       filter: {
         and: [
           {
@@ -65,7 +65,10 @@ class No2tg {
       return;
     }
 
-    this._send(resOfNotion.results[0]);
+    // 对发送列表进行排序
+    const sortedResults = resOfNotion.results.sort((a, b) => a.properties.PubOrder.number - b.properties.PubOrder.number);
+
+    this._send(sortedResults[0]);
   }
 
   /**
