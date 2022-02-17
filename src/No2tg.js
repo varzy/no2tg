@@ -1,13 +1,14 @@
 const Day = require('dayjs');
 const Axios = require('axios');
 const { Client } = require('@notionhq/client');
+const HttpsProxyAgent = require('https-proxy-agent');
 
 class No2tg {
   constructor({ databaseId, notionAuthKey, telegramBotToken, telegramChatId }) {
     this.databaseId = databaseId;
     this.telegramChatId = telegramChatId;
 
-    this.notion = new Client({ auth: notionAuthKey });
+    this.notion = new Client({ auth: notionAuthKey, agent: new HttpsProxyAgent('http://127.0.0.1:8888') });
 
     this.http = Axios.create({
       baseURL: `https://api.telegram.org/bot${telegramBotToken}`,
@@ -116,10 +117,10 @@ class No2tg {
     }
 
     // 视频元信息
-    if (publishing.properties.WithVideoMeta.checkbox) {
-      template += `[[_VIDEO_META]]\n\n`;
-      templatePartials._VIDEO_META = this._buildVideoMeta(publishing);
-    }
+    // if (publishing.properties.WithVideoMeta.checkbox) {
+    //   template += `[[_VIDEO_META]]\n\n`;
+    //   templatePartials._VIDEO_META = this._buildVideoMeta(publishing);
+    // }
 
     // 内容
     template += `[[_CONTENT]]\n\n`;
